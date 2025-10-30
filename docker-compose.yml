@@ -31,7 +31,7 @@ services:
       TURN_SERVER_URL: "turn:100.40.100.80:3478"
       TURN_SERVER_USERNAME: mirotalk
       TURN_SERVER_CREDENTIAL: "your_secure_turn_password_here"
-      # Host protection
+      # Host protection. Change admin password
       HOST_PROTECTED: "true"       # always wrap booleans in quotes
       HOST_USER_AUTH: "false"      # always wrap booleans in quotes
       HOST_USERS: >
