@@ -1,0 +1,161 @@
+# Jitsi Meet Docker Compose with a Self-Hosted Coturn TURN/STUN Server
+#
+# This configuration provides maximum reliability and independence from
+# external services.
+
+networks:
+  jitsi-net:
+    driver: bridge
+
+volumes:
+  jitsi-certs:
+  jitsi-web-config:
+  jitsi-prosody-config:
+  jitsi-jicofo-config:
+  jitsi-jvb-config:
+
+services:
+  # Generates a self-signed certificate for the PUBLIC_IP
+  certs:
+    image: alpine:latest
+    container_name: jitsi-certs
+    command: >
+      sh -c "apk add --no-cache openssl &&
+      if [ ! -f /certs/privkey.pem ]; then
+        echo 'Generating self-signed certificate for ${PUBLIC_IP}...' &&
+        openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj '/CN=${PUBLIC_IP}' -keyout /certs/privkey.pem -out /certs/cert.pem &&
+        echo 'Certificate created ✔';
+      else
+        echo 'Certificates already exist, skipping ✔';
+      fi"
+    environment:
+      - PUBLIC_IP=${PUBLIC_IP}
+    volumes:
+      - jitsi-certs:/certs
+
+  # Web frontend (Nginx + Jitsi Meet app)
+  web:
+    image: jitsi/web:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+    volumes:
+      - jitsi-web-config:/config
+      - jitsi-certs:/etc/jitsi/web/letsencrypt:ro
+    environment:
+      - TZ=${TZ}
+      - ENABLE_GUESTS=1
+      - ENABLE_AUTH=0
+      - PUBLIC_URL=https://${PUBLIC_IP}
+      - XMPP_SERVER=prosody
+      - XMPP_DOMAIN=${PUBLIC_IP}
+      - XMPP_MUC_DOMAIN=muc.${PUBLIC_IP}
+      - XMPP_BOSH_URL_BASE=http://prosody:5280
+      - TURN_URLS=${PUBLIC_IP}:3478
+    networks:
+      - jitsi-net
+    depends_on:
+      - certs
+      - prosody
+      - jicofo
+
+  # Conference focus component
+  jicofo:
+    image: jitsi/jicofo:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    volumes:
+      - jitsi-jicofo-config:/config
+    environment:
+      - TZ=${TZ}
+      - ENABLE_AUTH=0
+      - XMPP_DOMAIN=${PUBLIC_IP}
+      - XMPP_SERVER=prosody
+      - XMPP_AUTH_DOMAIN=auth.${PUBLIC_IP}
+      - JICOFO_COMPONENT_SECRET=${JICOFO_COMPONENT_SECRET}
+      - JICOFO_AUTH_USER=focus
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD}
+      - JVB_BREWERY_MUC=jvbbrewery
+      - TURN_CREDENTIALS_SECRET=${TURN_CREDENTIALS_SECRET}
+    networks:
+      - jitsi-net
+    depends_on:
+      - prosody
+
+  # Jitsi Videobridge
+  jvb:
+    image: jitsi/jvb:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:10000:10000/udp"
+    volumes:
+      - jitsi-jvb-config:/config
+    environment:
+      - TZ=${TZ}
+      - DOCKER_HOST_ADDRESS=${PUBLIC_IP}
+      - JVB_ADVERTISE_IPS=${PUBLIC_IP}
+      - JVB_TCP_HARVESTER_DISABLED=true
+      - XMPP_DOMAIN=${PUBLIC_IP}
+      - XMPP_SERVER=prosody
+      - XMPP_AUTH_DOMAIN=auth.${PUBLIC_IP}
+      - JVB_COMPONENT_SECRET=${JVB_COMPONENT_SECRET}
+      - JVB_AUTH_USER=jvb
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD}
+      - JVB_STUN_SERVERS=coturn:3478
+      - TURN_ENABLED=0
+    networks:
+      - jitsi-net
+    depends_on:
+      - prosody
+      - coturn
+
+  # XMPP Server
+  prosody:
+    image: jitsi/prosody:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    expose:
+      - "5222"
+      - "5347"
+      - "5280"
+    volumes:
+      - jitsi-prosody-config:/config
+    environment:
+      - TZ=${TZ}
+      - XMPP_DOMAIN=${PUBLIC_IP}
+      - XMPP_AUTH_DOMAIN=auth.${PUBLIC_IP}
+      - XMPP_MUC_DOMAIN=muc.${PUBLIC_IP}
+      - GUEST_XMPP_DOMAIN=guest.${PUBLIC_IP}
+      - JICOFO_COMPONENT_SECRET=${JICOFO_COMPONENT_SECRET}
+      - JVB_COMPONENT_SECRET=${JVB_COMPONENT_SECRET}
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD}
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD}
+      - JICOFO_AUTH_USER=focus
+      - JVB_AUTH_USER=jvb
+      - TURN_ENABLED=0
+    networks:
+      - jitsi-net
+
+  # Self-Hosted TURN/STUN Server
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+    command:
+      - -n
+      - --log-file=stdout
+      - --simple-log
+      - --realm=${PUBLIC_IP}
+      - --external-ip=${PUBLIC_IP}
+      - --listening-port=3478
+      - --min-port=49256
+      - --max-port=49512
+      - --lt-cred-mech
+      - --static-auth-secret=${TURN_CREDENTIALS_SECRET}
+      - --total-quota=100
+      - --user-quota=10
+      - --bps-capacity=10000000 # 10 Mbps total server bandwidth limit
+      - --max-bps=2000000      # 2 Mbps per-session bandwidth limit
+    networks:
+      - jitsi-net
