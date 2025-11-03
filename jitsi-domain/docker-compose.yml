@@ -1,0 +1,139 @@
+# Jitsi Meet Docker Compose - Simplified and Correct Let's Encrypt Setup
+
+networks:
+  jitsi-net:
+    driver: bridge
+
+volumes:
+  jitsi-letsencrypt:
+  jitsi-web-config:
+  jitsi-prosody-config:
+  jitsi-jicofo-config:
+  jitsi-jvb-config:
+
+services:
+  # The 'web' service now handles certificate generation internally.
+  web:
+    image: jitsi/web:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+    volumes:
+      - jitsi-web-config:/config
+      - jitsi-letsencrypt:/etc/jitsi/web/letsencrypt
+    environment:
+      - TZ=${TZ}
+      - ENABLE_GUESTS=1
+      - ENABLE_AUTH=0
+      - PUBLIC_URL=https://${JITSI_DOMAIN}
+      - ENABLE_LETSENCRYPT=1
+      - LETSENCRYPT_DOMAIN=${JITSI_DOMAIN}
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
+      - XMPP_SERVER=prosody
+      - XMPP_DOMAIN=${JITSI_DOMAIN}
+      - XMPP_MUC_DOMAIN=muc.${JITSI_DOMAIN}
+      - XMPP_BOSH_URL_BASE=http://prosody:5280
+      - TURN_URLS=${JITSI_DOMAIN}:3478
+    networks:
+      - jitsi-net
+    depends_on:
+      - prosody
+      - jicofo
+
+
+  jicofo:
+    image: jitsi/jicofo:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    volumes:
+      - jitsi-jicofo-config:/config
+    environment:
+      - TZ=${TZ}
+      - ENABLE_AUTH=0
+      - XMPP_DOMAIN=${JITSI_DOMAIN}
+      - XMPP_SERVER=prosody
+      - XMPP_AUTH_DOMAIN=auth.${JITSI_DOMAIN}
+      - JICOFO_COMPONENT_SECRET=${JICOFO_COMPONENT_SECRET}
+      - JICOFO_AUTH_USER=focus
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD}
+      - JVB_BREWERY_MUC=jvbbrewery
+      - TURN_CREDENTIALS_SECRET=${TURN_CREDENTIALS_SECRET}
+    networks:
+      - jitsi-net
+    depends_on:
+      - prosody
+
+  jvb:
+    image: jitsi/jvb:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:10000:10000/udp"
+    volumes:
+      - jitsi-jvb-config:/config
+    environment:
+      - TZ=${TZ}
+      - DOCKER_HOST_ADDRESS=${DOCKER_HOST_ADDRESS}
+      - JVB_ADVERTISE_IPS=${DOCKER_HOST_ADDRESS}
+      - JVB_TCP_HARVESTER_DISABLED=true
+      - XMPP_DOMAIN=${JITSI_DOMAIN}
+      - XMPP_SERVER=prosody
+      - XMPP_AUTH_DOMAIN=auth.${JITSI_DOMAIN}
+      - JVB_COMPONENT_SECRET=${JVB_COMPONENT_SECRET}
+      - JVB_AUTH_USER=jvb
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD}
+      - JVB_STUN_SERVERS=coturn:3478
+      - TURN_ENABLED=0
+    networks:
+      - jitsi-net
+    depends_on:
+      - prosody
+      - coturn
+
+  prosody:
+    image: jitsi/prosody:${JITSI_IMAGE_TAG}
+    restart: unless-stopped
+    expose:
+      - "5222"
+      - "5347"
+      - "5280"
+    volumes:
+      - jitsi-prosody-config:/config
+    environment:
+      - TZ=${TZ}
+      - XMPP_DOMAIN=${JITSI_DOMAIN}
+      - XMPP_AUTH_DOMAIN=auth.${JITSI_DOMAIN}
+      - XMPP_MUC_DOMAIN=muc.${JITSI_DOMAIN}
+      - GUEST_XMPP_DOMAIN=guest.${JITSI_DOMAIN}
+      - JICOFO_COMPONENT_SECRET=${JICOFO_COMPONENT_SECRET}
+      - JVB_COMPONENT_SECRET=${JVB_COMPONENT_SECRET}
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD}
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD}
+      - JICOFO_AUTH_USER=focus
+      - JVB_AUTH_USER=jvb
+      - TURN_ENABLED=0
+    networks:
+      - jitsi-net
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+    command:
+      - -n
+      - --log-file=stdout
+      - --simple-log
+      - --realm=${JITSI_DOMAIN}
+      - --external-ip=${DOCKER_HOST_ADDRESS}
+      - --listening-port=3478
+      - --min-port=49256
+      - --max-port=49512
+      - --lt-cred-mech
+      - --static-auth-secret=${TURN_CREDENTIALS_SECRET}
+      - --total-quota=100
+      - --user-quota=10
+      - --bps-capacity=10000000
+      - --max-bps=2000000
+    networks:
+      - jitsi-net
